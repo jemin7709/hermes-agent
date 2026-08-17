@@ -706,9 +706,6 @@ def _wiki_private_slack_adapter_for_source(runner: Any, source: Any) -> Any:
         return None
     if getattr(source, "platform", None) != Platform.SLACK:
         return None
-    profile = (getattr(source, "profile", None) or "").strip().lower()
-    if profile not in {"", "wiki"}:
-        return None
     if getattr(source, "profile_route_rejected", False):
         return None
     if not getattr(source, "chat_id", None) or not getattr(source, "user_id", None):
@@ -5509,9 +5506,9 @@ class TurnRunner:
             # button/public-send path when Wiki identity is claimed.  Any
             # missing or stale proof raises so tools.approval can clean the
             # pending entry and return its exact notify_failed/BLOCKED result.
-            if _wiki_slack_boundary_candidate(self, ctx.source):
+            if _wiki_slack_boundary_candidate(self._runner, ctx.source):
                 _send_wiki_private_approval_sync(
-                    self,
+                    self._runner,
                     ctx,
                     approval_data,
                     cmd,

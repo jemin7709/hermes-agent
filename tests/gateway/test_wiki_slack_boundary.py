@@ -9,6 +9,7 @@ import pytest
 import hermes_constants
 import hermes_cli.profiles as profiles
 import gateway.run as run_module
+import tools.approval as approval_module
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
@@ -85,6 +86,16 @@ def test_wiki_requires_live_registered_transport_and_private_override(monkeypatc
 
     source.profile_route_rejected = True
     assert run_module._wiki_private_slack_adapter_for_source(runner, source) is None
+
+
+@pytest.mark.parametrize("source_profile", ["default", "invest"])
+def test_wiki_proof_ignores_profile_label_spoof_on_registered_primary_transport(
+    monkeypatch, tmp_path, source_profile
+):
+    _wiki_identity(monkeypatch, tmp_path)
+    runner, adapter, source = _live_runner_source(source_profile=source_profile)
+
+    assert run_module._wiki_private_slack_adapter_for_source(runner, source) is adapter
 
 
 def test_wiki_identity_matrix_rejects_stale_home_multiplex_spoof_and_base_fallback(
@@ -200,6 +211,63 @@ async def test_wiki_private_approval_failure_propagates_without_public_fallback(
             "recursive delete",
         )
 
+    adapter.send_exec_approval.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wiki_private_approval_failure_cleans_actual_gate_and_blocks(
+    monkeypatch, tmp_path
+):
+    _wiki_identity(monkeypatch, tmp_path)
+    runner, adapter, source = _live_runner_source()
+    adapter.send_private_notice = AsyncMock(
+        return_value=SendResult(success=False, error="private failed")
+    )
+    monkeypatch.setattr(run_module, "safe_schedule_threadsafe", _schedule_on_loop)
+    ctx = _approval_context(source, adapter)
+    session_key = "wiki-private-gate-failure"
+    approval_module.unregister_gateway_notify(session_key)
+    approval_module.clear_session(session_key)
+
+    def notify(approval_data):
+        command = run_module._redact_approval_command(
+            approval_data.get("command", "")
+        )
+        run_module._send_wiki_private_approval_sync(
+            runner,
+            ctx,
+            approval_data,
+            command,
+            approval_data.get("description", "dangerous command"),
+        )
+
+    approval_module.register_gateway_notify(session_key, notify)
+    token = approval_module.set_current_session_key(session_key)
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    try:
+        result = await asyncio.to_thread(
+            approval_module._run_approval_gate,
+            pattern_key="wiki-private-gate-failure",
+            description="private approval unavailable",
+            display_target="rm -rf /tmp/example",
+            cron_deny_message="cron denied",
+            autoapprove_log_prefix="wiki",
+        )
+    finally:
+        approval_module.reset_current_session_key(token)
+        approval_module.unregister_gateway_notify(session_key)
+
+    assert result == {
+        "approved": False,
+        "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+        "pattern_key": "wiki-private-gate-failure",
+        "description": "private approval unavailable",
+    }
+    with approval_module._lock:
+        assert session_key not in approval_module._gateway_queues
+    adapter.send_private_notice.assert_awaited_once()
     adapter.send_exec_approval.assert_not_awaited()
     adapter.send.assert_not_awaited()
 
