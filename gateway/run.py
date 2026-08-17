@@ -658,6 +658,148 @@ def _format_exec_approval_fallback(
     )
 
 
+def _wiki_active_home_is_canonical() -> bool:
+    """Return True only for the standalone canonical Wiki runtime home."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+        from hermes_constants import get_hermes_home
+
+        canonical_home = get_profile_dir("wiki").resolve()
+        return (
+            get_active_profile_name() == "wiki"
+            and Path(get_hermes_home()).resolve() == canonical_home
+            and Path(_hermes_home).resolve() == canonical_home
+        )
+    except Exception:
+        return False
+
+
+def _wiki_slack_boundary_candidate(runner: Any, source: Any) -> bool:
+    """Identify a Slack source that must fail closed if Wiki proof is absent.
+
+    A profile label is only a candidate marker, never proof.  The ordinary
+    unprofiled source used by a standalone Wiki gateway is a candidate only
+    when it carries transport provenance; this keeps bare test fixtures and
+    non-Wiki legacy callers on their original routing path.
+    """
+    if getattr(source, "platform", None) != Platform.SLACK:
+        return False
+    profile = (getattr(source, "profile", None) or "").strip().lower()
+    if profile == "wiki":
+        return True
+    if profile:
+        return False
+    return _wiki_active_home_is_canonical() and callable(
+        getattr(source, "_transport_adapter_ref", None)
+    )
+
+
+def _wiki_private_slack_adapter_for_source(runner: Any, source: Any) -> Any:
+    """Resolve a proven live Wiki Slack adapter, or return ``None``.
+
+    This deliberately requires the canonical active Wiki home, the primary
+    live Slack adapter, and the in-process transport reference that created the
+    source.  It also rejects the base adapter's public-send fallback by
+    requiring Slack's concrete private-notice override.
+    """
+    if not _wiki_active_home_is_canonical():
+        return None
+    if getattr(source, "platform", None) != Platform.SLACK:
+        return None
+    profile = (getattr(source, "profile", None) or "").strip().lower()
+    if profile not in {"", "wiki"}:
+        return None
+    if getattr(source, "profile_route_rejected", False):
+        return None
+    if not getattr(source, "chat_id", None) or not getattr(source, "user_id", None):
+        return None
+
+    adapter_ref = getattr(source, "_transport_adapter_ref", None)
+    if not callable(adapter_ref):
+        return None
+
+    resolve_adapter = getattr(runner, "_adapter_for_source", None)
+    registered_adapter = getattr(runner, "_registered_transport_adapter", None)
+    if not callable(resolve_adapter) or not callable(registered_adapter):
+        return None
+    try:
+        adapter = resolve_adapter(source)
+        registered = registered_adapter(source)
+        provenance = adapter_ref()
+    except Exception:
+        return None
+    if adapter is None or adapter is not registered or adapter is not provenance:
+        return None
+
+    # The canonical active Wiki boundary owns the runner's primary Slack slot;
+    # a secondary/multiplex adapter must not be able to spoof that identity.
+    adapters = getattr(runner, "adapters", None) or {}
+    if adapters.get(Platform.SLACK) is not adapter:
+        return None
+    if getattr(adapter, "platform", None) != Platform.SLACK:
+        return None
+
+    # A configured route that resolves elsewhere invalidates the source even
+    # when an attacker supplies ``source.profile = "wiki"`` by hand.
+    resolve_profile = getattr(runner, "_profile_name_for_source", None)
+    if callable(resolve_profile):
+        try:
+            routed_profile = resolve_profile(source)
+        except Exception:
+            return None
+        if routed_profile and routed_profile != "wiki":
+            return None
+
+    private_notice = getattr(type(adapter), "send_private_notice", None)
+    if private_notice is None or private_notice is BasePlatformAdapter.send_private_notice:
+        return None
+    if getattr(private_notice, "__module__", "") != "plugins.platforms.slack.adapter":
+        return None
+    return adapter
+
+
+def _send_wiki_private_approval_sync(
+    runner: Any,
+    ctx: "TurnContext",
+    approval_data: dict,
+    command: str,
+    description: str,
+) -> None:
+    """Send one Wiki approval only through Slack's explicit-user ephemeral API."""
+    adapter = _wiki_private_slack_adapter_for_source(runner, ctx.source)
+    if adapter is None or adapter is not ctx._status_adapter:
+        raise RuntimeError("Wiki private Slack approval route is not proven")
+
+    command_prefix = getattr(adapter, "typed_command_prefix", "/")
+    content = _format_exec_approval_fallback(
+        command,
+        description,
+        command_prefix,
+        allow_permanent=approval_data.get("allow_permanent", True),
+        allow_session=approval_data.get("allow_session", True),
+        smart_denied=approval_data.get("smart_denied", False),
+    )
+    private_send = adapter.send_private_notice(
+        chat_id=ctx._status_chat_id,
+        user_id=ctx.source.user_id,
+        content=content,
+        metadata=ctx._status_thread_metadata,
+    )
+    future = safe_schedule_threadsafe(
+        private_send,
+        ctx._loop_for_step,
+        logger=logger,
+        log_message="Wiki private approval scheduling error",
+    )
+    if future is None:
+        raise RuntimeError("Wiki private Slack approval loop unavailable")
+    result = future.result(timeout=15)
+    if not getattr(result, "success", False):
+        raise RuntimeError(
+            f"Wiki private Slack approval failed: {getattr(result, 'error', '')}"
+        )
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -5362,6 +5504,20 @@ class TurnRunner:
             # (send_exec_approval) and plain-text fallback paths below use
             # the redacted value.
             cmd = _redact_approval_command(cmd)
+
+            # Wiki approvals are a strict boundary: never enter the generic
+            # button/public-send path when Wiki identity is claimed.  Any
+            # missing or stale proof raises so tools.approval can clean the
+            # pending entry and return its exact notify_failed/BLOCKED result.
+            if _wiki_slack_boundary_candidate(self, ctx.source):
+                _send_wiki_private_approval_sync(
+                    self,
+                    ctx,
+                    approval_data,
+                    cmd,
+                    desc,
+                )
+                return
 
             # Prefer button-based approval when the adapter supports it.
             # Check the *class* for the method, not the instance — avoids
@@ -14332,6 +14488,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             notice_delivery = config.get_notice_delivery(source.platform)
 
         metadata = self._thread_metadata_for_source(source)
+        if (
+            notice_delivery == "private"
+            and _wiki_slack_boundary_candidate(self, source)
+        ):
+            wiki_adapter = _wiki_private_slack_adapter_for_source(self, source)
+            if wiki_adapter is None or wiki_adapter is not adapter:
+                logger.warning(
+                    "[Wiki] Suppressed private operational notice: "
+                    "Slack route provenance is not proven"
+                )
+                return
+            try:
+                result = await wiki_adapter.send_private_notice(
+                    source.chat_id,
+                    source.user_id,
+                    content,
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.warning(
+                    "[Wiki] Suppressed private operational notice after send failure",
+                    exc_info=True,
+                )
+                return
+            if getattr(result, "success", False):
+                return
+            logger.warning(
+                "[Wiki] Suppressed private operational notice: %s",
+                getattr(result, "error", "send failed"),
+            )
+            return
+
         if notice_delivery == "private" and getattr(source, "user_id", None):
             try:
                 result = await adapter.send_private_notice(
