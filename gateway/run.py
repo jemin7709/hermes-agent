@@ -658,18 +658,27 @@ def _format_exec_approval_fallback(
     )
 
 
-def _wiki_active_home_is_canonical() -> bool:
-    """Return True only for the standalone canonical Wiki runtime home."""
+def _wiki_process_is_canonical() -> bool:
+    """Return True only for the process-level canonical Wiki runtime."""
     try:
         from hermes_cli.profiles import get_active_profile_name, get_profile_dir
-        from hermes_constants import get_hermes_home
 
         canonical_home = get_profile_dir("wiki").resolve()
         return (
             get_active_profile_name() == "wiki"
-            and Path(get_hermes_home()).resolve() == canonical_home
             and Path(_hermes_home).resolve() == canonical_home
         )
+    except Exception:
+        return False
+
+
+def _wiki_active_home_is_canonical() -> bool:
+    """Return True only when the current scoped home is canonical Wiki."""
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home()).resolve() == get_profile_dir("wiki").resolve()
     except Exception:
         return False
 
@@ -685,7 +694,7 @@ def _wiki_slack_boundary_candidate(runner: Any, source: Any) -> bool:
     """
     if (
         getattr(source, "platform", None) != Platform.SLACK
-        or not _wiki_active_home_is_canonical()
+        or not _wiki_process_is_canonical()
     ):
         return False
 
@@ -699,14 +708,15 @@ def _wiki_slack_boundary_candidate(runner: Any, source: Any) -> bool:
     if adapter is None:
         return True
 
-    adapter_profile = getattr(runner, "_adapter_profile_for_source", None)
-    if not callable(adapter_profile):
+    primary = (getattr(runner, "adapters", None) or {}).get(Platform.SLACK)
+    profile_matches = [
+        profile
+        for profile, adapters in (getattr(runner, "_profile_adapters", None) or {}).items()
+        if adapters.get(Platform.SLACK) is adapter
+    ]
+    if adapter is primary:
         return True
-    try:
-        owner = adapter_profile(source)
-    except Exception:
-        return True
-    return owner in (None, "wiki")
+    return len(profile_matches) != 1
 
 
 def _wiki_private_slack_adapter_for_source(runner: Any, source: Any) -> Any:

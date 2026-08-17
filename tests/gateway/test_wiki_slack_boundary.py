@@ -1,6 +1,7 @@
 import asyncio
 import concurrent.futures
 import weakref
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,7 +24,11 @@ def _wiki_identity(monkeypatch, tmp_path):
     monkeypatch.setattr(run_module, "_hermes_home", home)
     monkeypatch.setattr(profiles, "get_profile_dir", lambda name: home)
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "wiki")
-    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(
+        hermes_constants,
+        "get_hermes_home",
+        lambda: Path(hermes_constants.get_hermes_home_override() or home),
+    )
     return home
 
 
@@ -133,6 +138,36 @@ def test_wiki_boundary_candidate_uses_production_transport_not_profile_label(
 
     assert source._transport_adapter_ref() is adapter
     assert run_module._wiki_slack_boundary_candidate(runner, source)
+
+
+@pytest.mark.parametrize("replacement", [None, object()])
+def test_wiki_boundary_candidate_keeps_captured_primary_trust_on_registry_interleave(
+    monkeypatch, tmp_path, replacement
+):
+    _wiki_identity(monkeypatch, tmp_path)
+    runner, adapter, source = _production_runner_source()
+    source.profile = "default"
+    calls = iter((adapter, replacement))
+    monkeypatch.setattr(runner, "_registered_transport_adapter", lambda _source: next(calls))
+
+    assert run_module._wiki_slack_boundary_candidate(runner, source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_profile", ["default", "invest"])
+async def test_wiki_candidate_survives_scoped_home_but_strict_proof_blocks(
+    monkeypatch, tmp_path, source_profile
+):
+    home = _wiki_identity(monkeypatch, tmp_path)
+    runner, adapter, source = _live_runner_source(source_profile=source_profile)
+
+    with run_module._profile_runtime_scope(home / source_profile):
+        assert run_module._wiki_slack_boundary_candidate(runner, source)
+        monkeypatch.setattr(run_module, "_wiki_active_home_is_canonical", lambda: False)
+        assert run_module._wiki_private_slack_adapter_for_source(runner, source) is None
+
+    assert adapter.send_private_notice.await_count == 0
+    assert adapter.send.await_count == 0
 
 
 @pytest.mark.asyncio
