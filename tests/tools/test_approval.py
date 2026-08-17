@@ -41,6 +41,40 @@ class TestApprovalModeParsing:
             assert _get_approval_mode() == "off"
 
 
+def test_gateway_notify_exception_cleans_pending_and_returns_exact_blocked(monkeypatch):
+    session_key = "wiki-notify-failure"
+    approval_module.unregister_gateway_notify(session_key)
+    approval_module.clear_session(session_key)
+
+    def fail_notify(_approval_data):
+        raise RuntimeError("private notice unavailable")
+
+    approval_module.register_gateway_notify(session_key, fail_notify)
+    token = approval_module.set_current_session_key(session_key)
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    try:
+        result = approval_module._run_approval_gate(
+            pattern_key="wiki-private-notify",
+            description="test approval",
+            display_target="rm -rf /tmp/example",
+            cron_deny_message="cron denied",
+            autoapprove_log_prefix="test",
+        )
+    finally:
+        approval_module.reset_current_session_key(token)
+        approval_module.unregister_gateway_notify(session_key)
+
+    assert result == {
+        "approved": False,
+        "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+        "pattern_key": "wiki-private-notify",
+        "description": "test approval",
+    }
+    with approval_module._lock:
+        assert session_key not in approval_module._gateway_queues
+
+
 class TestSmartApproval:
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
