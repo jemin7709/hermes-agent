@@ -677,21 +677,36 @@ def _wiki_active_home_is_canonical() -> bool:
 def _wiki_slack_boundary_candidate(runner: Any, source: Any) -> bool:
     """Identify a Slack source that must fail closed if Wiki proof is absent.
 
-    A profile label is only a candidate marker, never proof.  The ordinary
-    unprofiled source used by a standalone Wiki gateway is a candidate only
-    when it carries transport provenance; this keeps bare test fixtures and
-    non-Wiki legacy callers on their original routing path.
+    Candidacy is limited to the canonical Wiki runtime.  A registered
+    secondary adapter is the only trusted exception: its live transport
+    provenance proves that this is a non-primary multiplex route and it keeps
+    the generic path.  Missing, stale, or ambiguous provenance remains a
+    candidate so the strict resolver can fail closed.
     """
-    if getattr(source, "platform", None) != Platform.SLACK:
+    if (
+        getattr(source, "platform", None) != Platform.SLACK
+        or not _wiki_active_home_is_canonical()
+    ):
         return False
-    profile = (getattr(source, "profile", None) or "").strip().lower()
-    if profile == "wiki":
+
+    registered_transport = getattr(runner, "_registered_transport_adapter", None)
+    if not callable(registered_transport):
         return True
-    if profile:
-        return False
-    return _wiki_active_home_is_canonical() and callable(
-        getattr(source, "_transport_adapter_ref", None)
-    )
+    try:
+        adapter = registered_transport(source)
+    except Exception:
+        return True
+    if adapter is None:
+        return True
+
+    adapter_profile = getattr(runner, "_adapter_profile_for_source", None)
+    if not callable(adapter_profile):
+        return True
+    try:
+        owner = adapter_profile(source)
+    except Exception:
+        return True
+    return owner in (None, "wiki")
 
 
 def _wiki_private_slack_adapter_for_source(runner: Any, source: Any) -> Any:

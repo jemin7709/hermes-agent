@@ -65,6 +65,41 @@ def _live_runner_source(*, source_profile=None):
     return runner, adapter, source
 
 
+def _production_runner_source():
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={"notice_delivery": "private"},
+            )
+        }
+    )
+    adapter = SlackAdapter(runner.config.platforms[Platform.SLACK])
+    adapter.pause_typing_for_chat = MagicMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_exec_approval = AsyncMock(
+        return_value=SendResult(success=True, message_id="public-approval")
+    )
+    adapter.send_private_notice = AsyncMock(
+        return_value=SendResult(success=True, message_id="private")
+    )
+    runner.adapters = {Platform.SLACK: adapter}
+    runner._profile_adapters = {"invest": {Platform.SLACK: adapter}}
+    source = adapter.build_source(
+        chat_id="C123",
+        chat_name="general",
+        chat_type="channel",
+        user_id="U123",
+        thread_id="111.222",
+    )
+    runner._thread_metadata_for_source = MagicMock(
+        return_value={"thread_id": "111.222"}
+    )
+    return runner, adapter, source
+
+
 def test_wiki_requires_live_registered_transport_and_private_override(monkeypatch, tmp_path):
     _wiki_identity(monkeypatch, tmp_path)
     runner, adapter, source = _live_runner_source()
@@ -86,6 +121,86 @@ def test_wiki_requires_live_registered_transport_and_private_override(monkeypatc
 
     source.profile_route_rejected = True
     assert run_module._wiki_private_slack_adapter_for_source(runner, source) is None
+
+
+@pytest.mark.parametrize("source_profile", [None, "wiki", "default", "invest", "spoof"])
+def test_wiki_boundary_candidate_uses_production_transport_not_profile_label(
+    monkeypatch, tmp_path, source_profile
+):
+    _wiki_identity(monkeypatch, tmp_path)
+    runner, adapter, source = _production_runner_source()
+    source.profile = source_profile
+
+    assert source._transport_adapter_ref() is adapter
+    assert run_module._wiki_slack_boundary_candidate(runner, source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_profile", ["default", "invest"])
+@pytest.mark.parametrize("provenance", ["missing", "stale"])
+async def test_wiki_operational_notice_fail_closed_for_ambiguous_production_source(
+    monkeypatch, tmp_path, source_profile, provenance
+):
+    _wiki_identity(monkeypatch, tmp_path)
+    runner, adapter, source = _production_runner_source()
+    source.profile = source_profile
+    if provenance == "missing":
+        del source._transport_adapter_ref
+    else:
+        stale_adapter = object.__new__(SlackAdapter)
+        source._transport_adapter_ref = weakref.ref(stale_adapter)
+
+    await runner._deliver_platform_notice(source, "operational notice")
+
+    adapter.send_private_notice.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_wiki_operational_notice_keeps_proven_secondary_generic_path(
+    monkeypatch, tmp_path
+):
+    _wiki_identity(monkeypatch, tmp_path)
+    runner, primary, _source = _production_runner_source()
+
+    class InheritedBaseAdapter(BasePlatformAdapter):
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def get_chat_info(self, _chat_id):
+            return {}
+
+        async def send(self, *_args, **_kwargs):
+            return SendResult(success=True)
+
+    secondary = object.__new__(InheritedBaseAdapter)
+    secondary.platform = Platform.SLACK
+    secondary.send = AsyncMock(return_value=SendResult(success=True))
+    runner._profile_adapters = {"invest": {Platform.SLACK: secondary}}
+    source = secondary.build_source(
+        chat_id="C456",
+        chat_name="secondary",
+        chat_type="channel",
+        user_id="U456",
+        thread_id="333.444",
+    )
+    source.profile = "invest"
+    runner._thread_metadata_for_source = MagicMock(
+        return_value={"thread_id": "333.444"}
+    )
+
+    await runner._deliver_platform_notice(source, "secondary notice")
+
+    secondary.send.assert_awaited_once_with(
+        chat_id="C456",
+        content="secondary notice",
+        reply_to=None,
+        metadata={"thread_id": "333.444"},
+    )
+    primary.send.assert_not_awaited()
 
 
 @pytest.mark.parametrize("source_profile", ["default", "invest"])
@@ -216,11 +331,12 @@ async def test_wiki_private_approval_failure_propagates_without_public_fallback(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_profile", ["default", "invest"])
 async def test_wiki_private_approval_failure_cleans_actual_gate_and_blocks(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, source_profile
 ):
     _wiki_identity(monkeypatch, tmp_path)
-    runner, adapter, source = _live_runner_source()
+    runner, adapter, source = _live_runner_source(source_profile=source_profile)
     adapter.send_private_notice = AsyncMock(
         return_value=SendResult(success=False, error="private failed")
     )
