@@ -102,6 +102,30 @@ def test_default_sentinel_uses_runtime_override_not_canonical_home(
     assert not (canonical / "state" / "gateway.lifecycle.json").exists()
 
 
+def test_default_unclean_exit_artifacts_use_runtime_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    canonical = tmp_path / "canonical"
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_HOME", str(canonical))
+    monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+    _write_sentinel(runtime, {
+        "phase": "running",
+        "pid": _DEAD_PID,
+        "start_time": 1000.0,
+        "started_at": "2026-07-11T04:30:00+00:00",
+    })
+
+    evidence = record_startup()
+
+    assert evidence is not None
+    assert evidence["prior_pid"] == _DEAD_PID
+    assert len(_exit_diag_records(runtime)) == 1
+    assert get_lifecycle_sentinel_path().parent.parent == runtime
+    assert not (canonical / "state" / "gateway.lifecycle.json").exists()
+    assert not (canonical / "logs" / "gateway-exit-diag.log").exists()
+
+
 def test_clean_exit_then_boot_reports_nothing(tmp_path: Path) -> None:
     record_startup(home=tmp_path)
     mark_exited(0, reason="graceful_shutdown", home=tmp_path)

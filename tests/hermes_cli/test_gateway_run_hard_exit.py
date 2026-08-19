@@ -57,6 +57,27 @@ def test_run_gateway_hard_exits_after_clean_return(monkeypatch):
     assert excinfo.value.code == 0
 
 
+def test_run_gateway_exit_diag_uses_runtime_override(tmp_path, monkeypatch):
+    gateway_cli = _prepare(monkeypatch)
+    canonical = tmp_path / "canonical"
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_HOME", str(canonical))
+    monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("HERMES_GATEWAY_EXIT_DIAG", "1")
+
+    def _fake_run(coro):
+        coro.close()
+        return True
+
+    monkeypatch.setattr(gateway_cli.asyncio, "run", _fake_run)
+
+    with pytest.raises(_HardExitObserved):
+        gateway_cli.run_gateway()
+
+    assert (runtime / "logs" / "gateway-exit-diag.log").exists()
+    assert not (canonical / "logs" / "gateway-exit-diag.log").exists()
+
+
 def test_run_gateway_hard_exits_after_keyboard_interrupt(monkeypatch):
     """KeyboardInterrupt (console Ctrl+C) must also hard-exit, not return.
 

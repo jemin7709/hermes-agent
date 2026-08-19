@@ -58,13 +58,6 @@ _LOW_MEM_AVAILABLE_KIB = 64 * 1024  # < 64 MiB available
 _LOW_MEM_AVAILABLE_FRACTION = 0.05  # < 5% of MemTotal available
 
 
-def _process_hermes_home() -> Path:
-    """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    from hermes_constants import get_process_hermes_home
-
-    return get_process_hermes_home()
-
-
 def get_lifecycle_sentinel_path(home: Optional[Path] = None) -> Path:
     """Return the lifecycle sentinel path for the requested home or runtime."""
     if home is None:
@@ -134,7 +127,12 @@ def _write_sentinel(payload: Dict[str, Any], home: Optional[Path]) -> None:
 def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
     """Append a JSON line to gateway-exit-diag.log (same format as the CLI's
     ``_exit_diag`` records so existing tooling greps both)."""
-    base = home if home is not None else _process_hermes_home()
+    if home is None:
+        from hermes_constants import get_gateway_runtime_dir
+
+        base = get_gateway_runtime_dir()
+    else:
+        base = home
     path = base.joinpath(*_EXIT_DIAG_RELATIVE)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

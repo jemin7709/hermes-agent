@@ -5138,9 +5138,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         if os.environ.get("HERMES_GATEWAY_EXIT_DIAG", "1") != "1":
             return
         try:
-            from hermes_constants import get_hermes_home as _ghh
+            from hermes_constants import get_gateway_runtime_dir as _ggrd
 
-            log_dir = _ghh() / "logs"
+            log_dir = _ggrd() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             ts = _dt.now(_tz.utc).isoformat()
             line = {
