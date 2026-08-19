@@ -11,7 +11,7 @@ cross-correlating four log files and two external APIs to answer "what
 killed the gateway?".
 
 This module closes that gap with a tiny state machine persisted to
-``<HERMES_HOME>/state/gateway.lifecycle.json``:
+``<gateway runtime dir>/state/gateway.lifecycle.json``:
 
 * On startup, :func:`record_startup` reads the sentinel left by the
   previous life.  ``phase == "running"`` means that life never reached any
@@ -60,17 +60,19 @@ _LOW_MEM_AVAILABLE_FRACTION = 0.05  # < 5% of MemTotal available
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    val = os.environ.get("HERMES_HOME", "").strip()
-    if val:
-        return Path(val)
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_process_hermes_home
 
-    return get_hermes_home()
+    return get_process_hermes_home()
 
 
 def get_lifecycle_sentinel_path(home: Optional[Path] = None) -> Path:
-    """Return ``<HERMES_HOME>/state/gateway.lifecycle.json``."""
-    base = home if home is not None else _process_hermes_home()
+    """Return the lifecycle sentinel path for the requested home or runtime."""
+    if home is None:
+        from hermes_constants import get_gateway_runtime_dir
+
+        base = get_gateway_runtime_dir()
+    else:
+        base = home
     return base.joinpath(*_LIFECYCLE_RELATIVE)
 
 

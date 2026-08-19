@@ -22,6 +22,28 @@ from hermes_cli.service_manager import (
 )
 
 
+def test_desired_state_stays_in_canonical_home_with_runtime_override(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from hermes_cli.service_manager import _write_gateway_desired_state
+
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_HOME", str(canonical))
+    monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+
+    _write_gateway_desired_state("gateway-default", "running")
+
+    payload = json.loads(
+        (canonical / "gateway_state.json").read_text(encoding="utf-8")
+    )
+    assert payload["desired_state"] == "running"
+    assert not (runtime / "gateway_state.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # validate_profile_name
 # ---------------------------------------------------------------------------

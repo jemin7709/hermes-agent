@@ -158,6 +158,28 @@ def get_process_hermes_home() -> Path:
     return _hermes_home_from_env()
 
 
+def get_gateway_runtime_dir() -> Path:
+    """Return the current process's gateway runtime directory.
+
+    ``HERMES_GATEWAY_RUNTIME_DIR`` is an optional process-level override for
+    lifecycle artifacts.  Blank values preserve the existing process-home
+    default; non-blank values must expand to an absolute path.  This helper
+    deliberately ignores context-local HERMES_HOME overrides.
+    """
+    value = os.environ.get("HERMES_GATEWAY_RUNTIME_DIR", "").strip()
+    if not value:
+        return get_process_hermes_home()
+    try:
+        path = Path(value).expanduser()
+    except RuntimeError as exc:
+        raise ValueError(
+            "HERMES_GATEWAY_RUNTIME_DIR must expand to an absolute path"
+        ) from exc
+    if not path.is_absolute():
+        raise ValueError("HERMES_GATEWAY_RUNTIME_DIR must be an absolute path")
+    return path
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 

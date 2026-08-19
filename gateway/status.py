@@ -4,11 +4,10 @@ Gateway runtime status helpers.
 Provides PID-file based detection of whether the gateway daemon is running,
 used by send_message's check_fn to gate availability in the CLI.
 
-The PID file lives at ``{HERMES_HOME}/gateway.pid``.  HERMES_HOME defaults to
-``~/.hermes`` but can be overridden via the environment variable.  This means
-separate HERMES_HOME directories naturally get separate PID files — a property
-that will be useful when we add named profiles (multiple agents running
-concurrently under distinct configurations).
+Current-process lifecycle files live at ``{gateway runtime dir}/gateway.pid``.
+The runtime directory defaults to the process-level HERMES_HOME and can be
+overridden with ``HERMES_GATEWAY_RUNTIME_DIR``.  The persisted PID record still
+identifies the canonical process-level HERMES_HOME.
 """
 
 import copy
@@ -25,7 +24,7 @@ import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
+from hermes_constants import get_gateway_runtime_dir, _get_platform_default_hermes_home
 from typing import Any, Callable, NamedTuple, Optional
 from utils import atomic_json_write
 
@@ -65,7 +64,7 @@ def _get_starts_log_path() -> Path:
     """Path to the append-only gateway-start ledger used by the respawn-storm
     breaker. Distinct from ``restart_loop.json`` (the auto-resume guard) — no
     collision."""
-    return get_hermes_home() / "gateway-starts.log"
+    return get_gateway_runtime_dir() / "gateway-starts.log"
 
 
 def record_start_and_check_storm(
@@ -129,14 +128,11 @@ def record_start_and_check_storm(
 
 
 def _get_process_hermes_home() -> Path:
-    """Return the process-level HERMES_HOME, skipping context-local overrides.
+    """Return canonical process-level HERMES_HOME, skipping context overrides.
 
-    Gateway identity files (PID, lock, runtime status, takeover/stop markers)
-    must always live in the directory the gateway process was launched with.
-    ``get_hermes_home()`` honors ``_HERMES_HOME_OVERRIDE`` contextvar used for
-    per-session profile dispatch, which would route these files into the wrong
-    profile directory when a profile-context task happens to be active at write
-    time.  See issue #56986.
+    The runtime seam uses this only for persisted identity fields and explicit
+    cross-profile paths.  ``get_hermes_home()`` honors the context-local
+    ``_HERMES_HOME_OVERRIDE`` used for per-session profile dispatch.
     """
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
@@ -157,17 +153,15 @@ def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
 
 
 def _get_pid_path() -> Path:
-    """Return the path to the gateway PID file, respecting HERMES_HOME."""
-    home = _get_process_hermes_home()
-    return home / "gateway.pid"
+    """Return the path to the current process's gateway PID file."""
+    return get_gateway_runtime_dir() / "gateway.pid"
 
 
 def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
     """Return the path to the runtime gateway lock file."""
     if pid_path is not None:
         return pid_path.with_name(_GATEWAY_LOCK_FILENAME)
-    home = _get_process_hermes_home()
-    return home / _GATEWAY_LOCK_FILENAME
+    return get_gateway_runtime_dir() / _GATEWAY_LOCK_FILENAME
 
 
 def _get_runtime_status_path() -> Path:
@@ -1597,14 +1591,13 @@ def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
     ``hermes_home`` is supplied only for a verified cross-home handoff.  The
     target process always consumes the marker from its own process-level home.
     """
-    home = hermes_home or _get_process_hermes_home()
+    home = hermes_home if hermes_home is not None else get_gateway_runtime_dir()
     return _canonical_hermes_home(home) / _TAKEOVER_MARKER_FILENAME
 
 
 def _get_planned_stop_marker_path() -> Path:
     """Return the path to the intentional gateway stop marker file."""
-    home = _get_process_hermes_home()
-    return home / _PLANNED_STOP_MARKER_FILENAME
+    return get_gateway_runtime_dir() / _PLANNED_STOP_MARKER_FILENAME
 
 
 def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
@@ -1716,15 +1709,18 @@ def write_takeover_marker(
     without recognizing the handoff.
     """
     try:
+        target_hermes_home = _canonical_hermes_home(
+            target_home if target_home is not None else _get_process_hermes_home()
+        )
         marker_home = _canonical_hermes_home(
-            target_home or _get_process_hermes_home()
+            target_home if target_home is not None else get_gateway_runtime_dir()
         )
         if target_start_time is _UNSET:
             target_start_time = _get_process_start_time(target_pid)
         record = {
             "target_pid": target_pid,
             "target_start_time": target_start_time,
-            "target_hermes_home": str(marker_home),
+            "target_hermes_home": str(target_hermes_home),
             "replacer_pid": os.getpid(),
             "replacer_hermes_home": str(
                 _canonical_hermes_home(_get_process_hermes_home())

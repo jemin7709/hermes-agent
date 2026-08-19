@@ -14,6 +14,7 @@ from hermes_constants import (
     find_node_executable,
     find_node_executable_on_path,
     get_default_hermes_root,
+    get_gateway_runtime_dir,
     get_hermes_dir,
     get_hermes_home,
     get_process_hermes_home,
@@ -93,6 +94,48 @@ class TestGetProcessHermesHome:
         home = tmp_path / "launch-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert get_process_hermes_home() == home
+
+
+class TestGetGatewayRuntimeDir:
+    """Tests for the process-local gateway runtime directory seam."""
+
+    def test_unset_is_exact_process_home_compatibility(self, tmp_path, monkeypatch):
+        process_home = tmp_path / "process-home"
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        monkeypatch.delenv("HERMES_GATEWAY_RUNTIME_DIR", raising=False)
+
+        assert get_gateway_runtime_dir() == get_process_hermes_home()
+
+    def test_blank_falls_back_to_process_home(self, tmp_path, monkeypatch):
+        process_home = tmp_path / "process-home"
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", " \t")
+
+        assert get_gateway_runtime_dir() == process_home
+
+    def test_absolute_override_expands_user(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", "~/gateway-runtime")
+
+        assert get_gateway_runtime_dir() == tmp_path / "gateway-runtime"
+
+    def test_relative_override_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", "gateway-runtime")
+
+        with pytest.raises(ValueError, match="absolute"):
+            get_gateway_runtime_dir()
+
+    def test_context_local_home_override_is_ignored(self, tmp_path, monkeypatch):
+        process_home = tmp_path / "process-home"
+        profile_home = tmp_path / "profiles" / "cfo"
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        monkeypatch.delenv("HERMES_GATEWAY_RUNTIME_DIR", raising=False)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            assert get_gateway_runtime_dir() == process_home
+        finally:
+            reset_hermes_home_override(token)
 
 
 

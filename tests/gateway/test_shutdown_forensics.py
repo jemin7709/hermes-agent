@@ -68,6 +68,29 @@ class TestSnapshotShutdownContext:
         assert ctx["takeover_marker_for_self"] is True
 
 
+    def test_marker_reads_use_runtime_override(self, tmp_path, monkeypatch):
+        canonical = tmp_path / "canonical"
+        runtime = tmp_path / "runtime"
+        monkeypatch.setenv("HERMES_HOME", str(canonical))
+        monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+        runtime.mkdir()
+        (runtime / ".gateway-takeover.json").write_text(
+            f'{{"target_pid": {os.getpid()}, "replacer_pid": 99999}}',
+            encoding="utf-8",
+        )
+        (runtime / ".gateway-planned-stop.json").write_text(
+            '{"target_pid": 99999}',
+            encoding="utf-8",
+        )
+
+        ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
+
+        assert "takeover_marker" in ctx
+        assert ctx["takeover_marker_for_self"] is True
+        assert "planned_stop_marker" in ctx
+        assert not (canonical / ".gateway-takeover.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # format_context_for_log / context_as_json
 # ---------------------------------------------------------------------------

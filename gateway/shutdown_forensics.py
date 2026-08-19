@@ -168,26 +168,27 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     # _PLANNED_STOP_MARKER_FILENAME); we use string literals here so the
     # signal-handler path stays import-light.
     try:
-        hermes_home_str = os.environ.get("HERMES_HOME")
-        if hermes_home_str:
-            takeover_path = Path(hermes_home_str) / ".gateway-takeover.json"
-            if takeover_path.exists():
-                try:
-                    raw = takeover_path.read_text(encoding="utf-8")
-                    ctx["takeover_marker"] = raw[:300]
-                    ctx["takeover_marker_for_self"] = (
-                        f'"target_pid": {pid}' in raw
-                        or f"'target_pid': {pid}" in raw
-                    )
-                except OSError:
-                    pass
-            planned_stop_path = Path(hermes_home_str) / ".gateway-planned-stop.json"
-            if planned_stop_path.exists():
-                try:
-                    raw = planned_stop_path.read_text(encoding="utf-8")
-                    ctx["planned_stop_marker"] = raw[:300]
-                except OSError:
-                    pass
+        from hermes_constants import get_gateway_runtime_dir
+
+        runtime_dir = get_gateway_runtime_dir()
+        takeover_path = runtime_dir / ".gateway-takeover.json"
+        if takeover_path.exists():
+            try:
+                raw = takeover_path.read_text(encoding="utf-8")
+                ctx["takeover_marker"] = raw[:300]
+                ctx["takeover_marker_for_self"] = (
+                    f'"target_pid": {pid}' in raw
+                    or f"'target_pid': {pid}" in raw
+                )
+            except OSError:
+                pass
+        planned_stop_path = runtime_dir / ".gateway-planned-stop.json"
+        if planned_stop_path.exists():
+            try:
+                raw = planned_stop_path.read_text(encoding="utf-8")
+                ctx["planned_stop_marker"] = raw[:300]
+            except OSError:
+                pass
     except Exception:  # noqa: BLE001 — never raise from a signal handler
         pass
 

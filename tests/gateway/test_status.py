@@ -170,6 +170,40 @@ class TestGatewayPidState:
         (process_home / "gateway.pid").unlink(missing_ok=True)
 
 
+    def test_runtime_override_moves_gateway_status_artifacts_not_pid_identity_home(
+        self, tmp_path, monkeypatch
+    ):
+        canonical = tmp_path / "canonical"
+        runtime = tmp_path / "runtime"
+        monkeypatch.setenv("HERMES_HOME", str(canonical))
+        monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 42)
+        status.release_gateway_runtime_lock()
+
+        status.write_pid_file()
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            status.write_runtime_status(gateway_state="running")
+            status.record_start_and_check_storm()
+            assert status.write_takeover_marker(os.getpid()) is True
+            assert status.write_planned_stop_marker(os.getpid()) is True
+        finally:
+            status.release_gateway_runtime_lock()
+
+        expected = {
+            "gateway.pid",
+            "gateway.lock",
+            "gateway_state.json",
+            "gateway-starts.log",
+            ".gateway-takeover.json",
+            ".gateway-planned-stop.json",
+        }
+        assert {path.name for path in runtime.iterdir()} == expected
+        assert not any((canonical / name).exists() for name in expected)
+        pid_record = json.loads((runtime / "gateway.pid").read_text())
+        assert pid_record["hermes_home"] == str(canonical.resolve())
+
+
 class TestGatewayRuntimeStatus:
 
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):

@@ -66,3 +66,13 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 
+def test_default_liveness_artifacts_use_runtime_override(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical"
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_HOME", str(canonical))
+    monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+
+    assert get_loop_heartbeat_path() == runtime / "state" / "gateway.heartbeat"
+    assert get_shutdown_watchdog_dump_path() == runtime / "logs" / "gateway-shutdown-watchdog.log"
+
+

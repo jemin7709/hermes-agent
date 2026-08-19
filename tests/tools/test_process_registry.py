@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,31 @@ from tools.process_registry import (
     MAX_PROCESSES,
     MAX_ACTIVE_PROCESS_AGE,
 )
+
+
+def test_checkpoint_default_uses_runtime_override(tmp_path):
+    repo_root = Path(__file__).resolve().parents[2]
+    canonical = tmp_path / "canonical"
+    runtime = tmp_path / "runtime"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HERMES_HOME": str(canonical),
+        "HERMES_GATEWAY_RUNTIME_DIR": str(runtime),
+        "PYTHONPATH": str(repo_root),
+    }
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "from tools.process_registry import CHECKPOINT_PATH; print(CHECKPOINT_PATH)",
+        ],
+        cwd=repo_root,
+        env=env,
+        text=True,
+    ).strip()
+
+    assert Path(output) == runtime / "processes.json"
+    assert Path(output) != canonical / "processes.json"
 
 
 @pytest.fixture()

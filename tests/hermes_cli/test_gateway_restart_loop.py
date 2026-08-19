@@ -18,6 +18,21 @@ from hermes_cli.cron import (
 )
 
 
+def test_restart_loop_state_uses_runtime_override(tmp_path, monkeypatch):
+    from gateway import restart_loop_guard as guard
+
+    canonical = tmp_path / "canonical"
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_HOME", str(canonical))
+    monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+
+    guard.record_restart_interrupted_boot(now=100.0)
+
+    assert guard._state_path() == runtime / "gateway" / "restart_loop.json"
+    assert guard._state_path().exists()
+    assert not (canonical / "gateway" / "restart_loop.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # Defense 2: _contains_gateway_lifecycle_command pattern tests
 # ---------------------------------------------------------------------------

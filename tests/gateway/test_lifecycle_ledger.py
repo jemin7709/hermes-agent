@@ -88,6 +88,20 @@ def test_first_boot_reports_nothing_and_claims_sentinel(tmp_path: Path) -> None:
     assert "start_time" in sentinel
 
 
+def test_default_sentinel_uses_runtime_override_not_canonical_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    canonical = tmp_path / "canonical"
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_HOME", str(canonical))
+    monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+
+    assert record_startup() is None
+    assert get_lifecycle_sentinel_path() == runtime / "state" / "gateway.lifecycle.json"
+    assert get_lifecycle_sentinel_path().exists()
+    assert not (canonical / "state" / "gateway.lifecycle.json").exists()
+
+
 def test_clean_exit_then_boot_reports_nothing(tmp_path: Path) -> None:
     record_startup(home=tmp_path)
     mark_exited(0, reason="graceful_shutdown", home=tmp_path)

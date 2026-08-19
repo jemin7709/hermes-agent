@@ -109,6 +109,26 @@ def _named_actions(actions: list[ReconcileAction]) -> list[ReconcileAction]:
 # ---------------------------------------------------------------------------
 
 
+def test_default_desired_state_stays_canonical_with_runtime_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "gateway_state.json").write_text(
+        json.dumps({"desired_state": "running"})
+    )
+    monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(tmp_path / "runtime"))
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path,
+        scandir=tmp_path / "run-service",
+        dry_run=True,
+        container_argv=(),
+    )
+
+    assert actions[0] == ReconcileAction(
+        profile="default", prior_state="running", action="started"
+    )
+
+
 def test_running_profile_is_registered_and_autostarted(tmp_path: Path) -> None:
     scandir = tmp_path / "run-service"; scandir.mkdir()
     _make_profile(tmp_path, "coder", state="running")
