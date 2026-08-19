@@ -993,6 +993,45 @@ class TestScopedLockTakeover:
         )
         assert calls == []
 
+    @pytest.mark.parametrize("corrupt_record", ["lock", "pid"])
+    def test_handoff_rejects_runtime_metadata_when_expanduser_raises(
+        self, tmp_path, monkeypatch, corrupt_record
+    ):
+        target_home = tmp_path / "target"
+        target_runtime = tmp_path / "target-runtime"
+        record = self._owner_record(target_home, runtime_dir=target_runtime)
+        bad_runtime = "~missing-runtime-user/gateway"
+        if corrupt_record == "lock":
+            record["gateway_runtime_dir"] = bad_runtime
+        else:
+            pid_path = target_runtime / "gateway.pid"
+            pid_record = json.loads(pid_path.read_text())
+            pid_record["gateway_runtime_dir"] = bad_runtime
+            pid_path.write_text(json.dumps(pid_record))
+
+        real_expanduser = status.Path.expanduser
+
+        def expanduser(path):
+            if str(path) == bad_runtime:
+                raise RuntimeError("Could not determine home directory")
+            return real_expanduser(path)
+
+        monkeypatch.setattr(status.Path, "expanduser", expanduser)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+        monkeypatch.setattr(
+            status, "terminate_pid", lambda *args, **kwargs: calls.append(args)
+        )
+
+        assert status.take_over_scoped_lock_holder(record, graceful_attempts=0) is None
+        assert calls == []
+
     def test_handoff_rejects_mixed_runtime_metadata(self, tmp_path, monkeypatch):
         target_home = tmp_path / "target"
         target_runtime = tmp_path / "target-runtime"

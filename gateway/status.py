@@ -147,7 +147,10 @@ def _canonical_hermes_home(path: Path | str) -> Path:
 
 def _canonical_gateway_runtime_dir(path: Path | str) -> Path:
     """Return a canonical absolute gateway runtime directory."""
-    runtime_dir = Path(path).expanduser()
+    try:
+        runtime_dir = Path(path).expanduser()
+    except RuntimeError as exc:
+        raise ValueError("gateway_runtime_dir could not be expanded") from exc
     if not runtime_dir.is_absolute():
         raise ValueError("gateway_runtime_dir must be an absolute path")
     return runtime_dir.resolve(strict=False)
