@@ -145,6 +145,14 @@ def _canonical_hermes_home(path: Path | str) -> Path:
     return Path(path).expanduser().resolve(strict=False)
 
 
+def _canonical_gateway_runtime_dir(path: Path | str) -> Path:
+    """Return a canonical absolute gateway runtime directory."""
+    runtime_dir = Path(path).expanduser()
+    if not runtime_dir.is_absolute():
+        raise ValueError("gateway_runtime_dir must be an absolute path")
+    return runtime_dir.resolve(strict=False)
+
+
 def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
     """Compare HERMES_HOME paths with the host platform's case semantics."""
     return os.path.normcase(str(_canonical_hermes_home(left))) == os.path.normcase(
@@ -567,10 +575,13 @@ def _build_pid_record() -> dict:
         "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped credential locks are machine-global rather than
-        # HERMES_HOME-local.  Persist the owning gateway's process home so an
-        # explicit cross-profile --replace can place its planned-takeover
-        # marker where the target process will actually read it.
+        # HERMES_HOME-local. Persist both the canonical logical home and the
+        # runtime directory so cross-profile --replace can place its marker
+        # where the target process will actually read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "gateway_runtime_dir": str(
+            _canonical_gateway_runtime_dir(get_gateway_runtime_dir())
+        ),
     }
 
 
@@ -993,6 +1004,8 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["hermes_home"] = current_record["hermes_home"]
+    payload["gateway_runtime_dir"] = current_record["gateway_runtime_dir"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:
@@ -1585,14 +1598,14 @@ _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
 
 
-def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
+def _get_takeover_marker_path(runtime_dir: Optional[Path] = None) -> Path:
     """Return the path to the --replace takeover marker file.
 
-    ``hermes_home`` is supplied only for a verified cross-home handoff.  The
-    target process always consumes the marker from its own process-level home.
+    ``runtime_dir`` is supplied only for a verified cross-home handoff.  The
+    target process always consumes the marker from its own runtime directory.
     """
-    home = hermes_home if hermes_home is not None else get_gateway_runtime_dir()
-    return _canonical_hermes_home(home) / _TAKEOVER_MARKER_FILENAME
+    runtime_dir = runtime_dir if runtime_dir is not None else get_gateway_runtime_dir()
+    return _canonical_gateway_runtime_dir(runtime_dir) / _TAKEOVER_MARKER_FILENAME
 
 
 def _get_planned_stop_marker_path() -> Path:
@@ -1690,6 +1703,7 @@ def write_takeover_marker(
     target_pid: int,
     *,
     target_home: Optional[Path] = None,
+    target_runtime_dir: Optional[Path] = None,
     target_start_time: Any = _UNSET,
 ) -> bool:
     """Record that ``target_pid`` is being replaced by the current process.
@@ -1698,10 +1712,10 @@ def write_takeover_marker(
     target exits cannot later match the marker. Also records the
     replacer's PID and a UTC timestamp for TTL-based staleness checks.
 
-    A verified scoped-lock handoff supplies ``target_home`` and the already
-    validated ``target_start_time`` so the marker is written into the target
-    gateway's HERMES_HOME rather than the replacer's.  Same-home callers omit
-    both arguments and preserve the historical behavior.
+    A verified scoped-lock handoff supplies the target's canonical
+    ``target_home``, runtime directory, and already validated
+    ``target_start_time``. Same-home callers omit both home arguments and
+    preserve the historical behavior.
 
     Returns True on successful write, False on any failure. Historical
     same-home callers may treat the marker as best effort. Cross-home callers
@@ -1712,8 +1726,12 @@ def write_takeover_marker(
         target_hermes_home = _canonical_hermes_home(
             target_home if target_home is not None else _get_process_hermes_home()
         )
-        marker_home = _canonical_hermes_home(
-            target_home if target_home is not None else get_gateway_runtime_dir()
+        marker_runtime_dir = (
+            target_runtime_dir
+            if target_runtime_dir is not None
+            else target_home
+            if target_home is not None
+            else get_gateway_runtime_dir()
         )
         if target_start_time is _UNSET:
             target_start_time = _get_process_start_time(target_pid)
@@ -1727,9 +1745,9 @@ def write_takeover_marker(
             ),
             "written_at": _utc_now_iso(),
         }
-        _write_json_file(_get_takeover_marker_path(marker_home), record)
+        _write_json_file(_get_takeover_marker_path(marker_runtime_dir), record)
         return True
-    except (OSError, PermissionError):
+    except (OSError, PermissionError, TypeError, ValueError):
         return False
 
 
@@ -1752,25 +1770,33 @@ def consume_takeover_marker_for_self() -> bool:
     )
 
 
-def clear_takeover_marker(target_home: Optional[Path] = None) -> None:
+def clear_takeover_marker(
+    target_home: Optional[Path] = None,
+    *,
+    target_runtime_dir: Optional[Path] = None,
+) -> None:
     """Remove the takeover marker unconditionally. Safe to call repeatedly."""
     try:
-        _get_takeover_marker_path(target_home).unlink(missing_ok=True)
+        marker_runtime_dir = (
+            target_runtime_dir if target_runtime_dir is not None else target_home
+        )
+        _get_takeover_marker_path(marker_runtime_dir).unlink(missing_ok=True)
     except OSError:
         pass
 
 
 def _validated_scoped_lock_gateway_owner(
     record: dict[str, Any],
-) -> Optional[tuple[int, int, Path]]:
+) -> Optional[tuple[int, int, Path, Path]]:
     """Resolve a live scoped-lock owner to a verified gateway identity.
 
     A machine-global scoped-lock file is only a claim; it is not sufficient
     authority to terminate a process or choose a marker destination.  Require
-    the lock record, the target HERMES_HOME's gateway PID record, and the live
-    OS process to agree on PID, start-time fingerprint, gateway identity, and
-    process home.  Missing legacy metadata fails closed and leaves the normal
-    retryable lock-conflict path in charge.
+    the lock record, the target runtime directory's gateway PID record, and the
+    live OS process to agree on PID, start-time fingerprint, gateway identity,
+    process home, and runtime directory.  Missing legacy metadata is accepted
+    only when both records omit it, using the old ``HERMES_HOME`` runtime
+    invariant; mixed or invalid metadata fails closed.
     """
     if not isinstance(record, dict) or not _record_looks_like_gateway(record):
         return None
@@ -1793,6 +1819,15 @@ def _validated_scoped_lock_gateway_owner(
         return None
     target_home = _canonical_hermes_home(raw_home)
 
+    lock_runtime_metadata = record.get("gateway_runtime_dir", _UNSET)
+    if lock_runtime_metadata is _UNSET:
+        lock_runtime_dir = None
+    else:
+        try:
+            lock_runtime_dir = _canonical_gateway_runtime_dir(lock_runtime_metadata)
+        except (TypeError, ValueError, OSError):
+            return None
+
     if not _pid_exists(owner_pid):
         return None
     live_start_time = _get_process_start_time(owner_pid)
@@ -1805,7 +1840,9 @@ def _validated_scoped_lock_gateway_owner(
     ):
         return None
 
-    pid_record = _read_json_file(target_home / "gateway.pid")
+    pid_record = _read_json_file(
+        (lock_runtime_dir or target_home) / "gateway.pid"
+    )
     if not isinstance(pid_record, dict) or not _record_looks_like_gateway(pid_record):
         return None
     try:
@@ -1821,7 +1858,21 @@ def _validated_scoped_lock_gateway_owner(
     ):
         return None
 
-    return owner_pid, owner_start_time, target_home
+    pid_runtime_metadata = pid_record.get("gateway_runtime_dir", _UNSET)
+    if lock_runtime_dir is None and pid_runtime_metadata is _UNSET:
+        runtime_dir = target_home
+    elif lock_runtime_dir is None or pid_runtime_metadata is _UNSET:
+        return None
+    else:
+        try:
+            pid_runtime_dir = _canonical_gateway_runtime_dir(pid_runtime_metadata)
+        except (TypeError, ValueError, OSError):
+            return None
+        if pid_runtime_dir != lock_runtime_dir:
+            return None
+        runtime_dir = lock_runtime_dir
+
+    return owner_pid, owner_start_time, target_home, runtime_dir
 
 
 def _scoped_lock_owner_state(owner_pid: int, owner_start_time: int) -> str:
@@ -1980,7 +2031,7 @@ def take_over_scoped_lock_holder(
     owner = _validated_scoped_lock_gateway_owner(record)
     if owner is None:
         return None
-    owner_pid, owner_start_time, target_home = owner
+    owner_pid, owner_start_time, target_home, target_runtime_dir = owner
 
     # Snapshot descendants while the owner is still alive — after it exits
     # they are reparented and undiscoverable (POSIX; [] on Windows where
@@ -1991,6 +2042,7 @@ def take_over_scoped_lock_holder(
         owner_pid,
         owner_start_time,
         target_home,
+        target_runtime_dir,
         graceful_attempts=graceful_attempts,
         force_attempts=force_attempts,
     )
@@ -2003,6 +2055,7 @@ def _terminate_scoped_lock_owner_once(
     owner_pid: int,
     owner_start_time: int,
     target_home: Path,
+    target_runtime_dir: Path,
     *,
     graceful_attempts: int = 20,
     force_attempts: int = 20,
@@ -2011,6 +2064,7 @@ def _terminate_scoped_lock_owner_once(
     if not write_takeover_marker(
         owner_pid,
         target_home=target_home,
+        target_runtime_dir=target_runtime_dir,
         target_start_time=owner_start_time,
     ):
         return None
@@ -2057,7 +2111,7 @@ def _terminate_scoped_lock_owner_once(
     finally:
         # The target normally consumes its marker from the signal handler.
         # Clean up any remainder after an already-gone/forced/failed handoff.
-        clear_takeover_marker(target_home)
+        clear_takeover_marker(target_home, target_runtime_dir=target_runtime_dir)
 
 
 def write_planned_stop_marker(target_pid: int) -> bool:

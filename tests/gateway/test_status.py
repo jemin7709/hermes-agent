@@ -23,6 +23,8 @@ class TestGatewayPidState:
         assert payload["kind"] == "hermes-gateway"
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
+        assert payload["hermes_home"] == str(tmp_path.resolve())
+        assert payload["gateway_runtime_dir"] == str(tmp_path.resolve())
 
     def test_write_pid_file_is_atomic_against_concurrent_writers(self, tmp_path, monkeypatch):
         """Regression: two concurrent --replace invocations must not both win.
@@ -202,6 +204,36 @@ class TestGatewayPidState:
         assert not any((canonical / name).exists() for name in expected)
         pid_record = json.loads((runtime / "gateway.pid").read_text())
         assert pid_record["hermes_home"] == str(canonical.resolve())
+        assert pid_record["gateway_runtime_dir"] == str(runtime.resolve())
+
+    def test_new_pid_runtime_and_scoped_lock_records_persist_runtime_identity(
+        self, tmp_path, monkeypatch
+    ):
+        canonical = tmp_path / "canonical"
+        runtime = tmp_path / "runtime"
+        lock_dir = tmp_path / "scoped-locks"
+        monkeypatch.setenv("HERMES_HOME", str(canonical))
+        monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(runtime))
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+
+        status.write_pid_file()
+        status.write_runtime_status(gateway_state="running")
+        acquired, _ = status.acquire_scoped_lock("telegram-bot-token", "secret")
+        assert acquired is True
+        try:
+            records = [
+                json.loads((runtime / "gateway.pid").read_text()),
+                json.loads((runtime / "gateway_state.json").read_text()),
+                json.loads(
+                    status._get_scope_lock_path("telegram-bot-token", "secret").read_text()
+                ),
+            ]
+        finally:
+            status.release_scoped_lock("telegram-bot-token", "secret")
+
+        for record in records:
+            assert record["hermes_home"] == str(canonical.resolve())
+            assert record["gateway_runtime_dir"] == str(runtime.resolve())
 
 
 class TestGatewayRuntimeStatus:
@@ -754,7 +786,9 @@ class TestScopedLockTakeover:
     """Cross-home takeover requires explicit, corroborated process identity."""
 
     @staticmethod
-    def _owner_record(target_home: Path, *, pid: int = 4242, start_time: int = 123):
+    def _owner_record(
+        target_home: Path, *, pid: int = 4242, start_time: int = 123, runtime_dir=None
+    ):
         target_home.mkdir(parents=True, exist_ok=True)
         record = {
             "pid": pid,
@@ -763,10 +797,14 @@ class TestScopedLockTakeover:
             "start_time": start_time,
             "hermes_home": str(target_home),
         }
-        (target_home / "gateway.pid").write_text(json.dumps(record))
+        pid_home = runtime_dir if runtime_dir is not None else target_home
+        pid_home.mkdir(parents=True, exist_ok=True)
+        if runtime_dir is not None:
+            record["gateway_runtime_dir"] = str(runtime_dir.resolve())
+        (pid_home / "gateway.pid").write_text(json.dumps(record))
         return record
 
-    def test_verified_distinct_home_handoff_marks_target_before_sigterm(
+    def test_legacy_handoff_falls_back_to_canonical_home_runtime(
         self, tmp_path, monkeypatch
     ):
         replacer_home = tmp_path / "replacer"
@@ -804,6 +842,49 @@ class TestScopedLockTakeover:
         assert not (target_home / ".gateway-takeover.json").exists()
         assert not (replacer_home / ".gateway-takeover.json").exists()
 
+    def test_separate_runtime_handoff_marks_runtime_with_logical_home_identity(
+        self, tmp_path, monkeypatch
+    ):
+        replacer_home = tmp_path / "replacer"
+        replacer_runtime = tmp_path / "replacer-runtime"
+        target_home = tmp_path / "target"
+        target_runtime = tmp_path / "target-runtime"
+        replacer_home.mkdir()
+        replacer_runtime.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(replacer_home))
+        monkeypatch.setenv("HERMES_GATEWAY_RUNTIME_DIR", str(replacer_runtime))
+        record = self._owner_record(target_home, runtime_dir=target_runtime)
+
+        alive = iter([True, True, False])
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: next(alive))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+
+        def terminate(pid, *, force=False):
+            marker_path = target_runtime / ".gateway-takeover.json"
+            assert marker_path.exists()
+            payload = json.loads(marker_path.read_text())
+            assert payload["target_hermes_home"] == str(target_home.resolve())
+            assert payload["replacer_hermes_home"] == str(replacer_home.resolve())
+            assert not (target_home / ".gateway-takeover.json").exists()
+            assert not (replacer_runtime / ".gateway-takeover.json").exists()
+            calls.append((pid, force))
+
+        monkeypatch.setattr(status, "terminate_pid", terminate)
+
+        owner_pid = status.take_over_scoped_lock_holder(record, graceful_attempts=1)
+
+        assert owner_pid == 4242
+        assert calls == [(4242, False)]
+        assert not (target_runtime / ".gateway-takeover.json").exists()
+        assert not (target_home / ".gateway-takeover.json").exists()
+        assert not (replacer_runtime / ".gateway-takeover.json").exists()
+
     def test_handoff_rejects_uncorroborated_target_home(self, tmp_path, monkeypatch):
         target_home = tmp_path / "target"
         record = self._owner_record(target_home)
@@ -827,6 +908,83 @@ class TestScopedLockTakeover:
         assert status.take_over_scoped_lock_holder(record) is None
         assert calls == []
         assert not (target_home / ".gateway-takeover.json").exists()
+
+    @pytest.mark.parametrize("bad_runtime", ["relative/runtime", "", "   "])
+    def test_handoff_rejects_invalid_runtime_metadata(
+        self, tmp_path, monkeypatch, bad_runtime
+    ):
+        target_home = tmp_path / "target"
+        record = self._owner_record(target_home)
+        record["gateway_runtime_dir"] = bad_runtime
+        (target_home / "gateway.pid").write_text(json.dumps(record))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+        monkeypatch.setattr(
+            status, "terminate_pid", lambda *args, **kwargs: calls.append(args)
+        )
+
+        assert (
+            status.take_over_scoped_lock_holder(
+                record, graceful_attempts=0, force_attempts=0
+            )
+            is None
+        )
+        assert calls == []
+
+    def test_handoff_rejects_mixed_runtime_metadata(self, tmp_path, monkeypatch):
+        target_home = tmp_path / "target"
+        target_runtime = tmp_path / "target-runtime"
+        record = self._owner_record(target_home)
+        record["gateway_runtime_dir"] = str(target_runtime.resolve())
+
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+        monkeypatch.setattr(
+            status, "terminate_pid", lambda *args, **kwargs: calls.append(args)
+        )
+
+        assert status.take_over_scoped_lock_holder(record, graceful_attempts=0) is None
+        assert calls == []
+
+    def test_handoff_rejects_mismatched_lock_and_pid_runtime_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        target_home = tmp_path / "target"
+        lock_runtime = tmp_path / "target-runtime-a"
+        pid_runtime = tmp_path / "target-runtime-b"
+        record = self._owner_record(target_home, runtime_dir=lock_runtime)
+        pid_record = json.loads((lock_runtime / "gateway.pid").read_text())
+        pid_record["gateway_runtime_dir"] = str(pid_runtime.resolve())
+        (lock_runtime / "gateway.pid").write_text(json.dumps(pid_record))
+        (target_home / "gateway.pid").write_text(json.dumps(pid_record))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda _pid: "python -m hermes_cli.main gateway run",
+        )
+        calls = []
+        monkeypatch.setattr(
+            status, "terminate_pid", lambda *args, **kwargs: calls.append(args)
+        )
+
+        assert status.take_over_scoped_lock_holder(record, graceful_attempts=0) is None
+        assert calls == []
 
 
 class TestPlannedStopMarker:
