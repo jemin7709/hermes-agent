@@ -580,7 +580,7 @@ def _build_pid_record() -> dict:
         # where the target process will actually read it.
         "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
         "gateway_runtime_dir": str(
-            _canonical_gateway_runtime_dir(get_gateway_runtime_dir())
+            _canonical_hermes_home(get_gateway_runtime_dir())
         ),
     }
 
@@ -1604,7 +1604,8 @@ def _get_takeover_marker_path(runtime_dir: Optional[Path] = None) -> Path:
     ``runtime_dir`` is supplied only for a verified cross-home handoff.  The
     target process always consumes the marker from its own runtime directory.
     """
-    runtime_dir = runtime_dir if runtime_dir is not None else get_gateway_runtime_dir()
+    if runtime_dir is None:
+        return get_gateway_runtime_dir() / _TAKEOVER_MARKER_FILENAME
     return _canonical_gateway_runtime_dir(runtime_dir) / _TAKEOVER_MARKER_FILENAME
 
 
@@ -1731,7 +1732,7 @@ def write_takeover_marker(
             if target_runtime_dir is not None
             else target_home
             if target_home is not None
-            else get_gateway_runtime_dir()
+            else None
         )
         if target_start_time is _UNSET:
             target_start_time = _get_process_start_time(target_pid)

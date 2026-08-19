@@ -206,6 +206,41 @@ class TestGatewayPidState:
         assert pid_record["hermes_home"] == str(canonical.resolve())
         assert pid_record["gateway_runtime_dir"] == str(runtime.resolve())
 
+    def test_relative_default_runtime_writes_records_with_absolute_identity(
+        self, tmp_path, monkeypatch
+    ):
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        relative_home = Path("relative-hermes-home")
+        lock_dir = tmp_path / "scoped-locks"
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("HERMES_HOME", str(relative_home))
+        monkeypatch.delenv("HERMES_GATEWAY_RUNTIME_DIR", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+
+        status.write_pid_file()
+        status.write_runtime_status(gateway_state="running")
+        acquired, _ = status.acquire_scoped_lock("telegram-bot-token", "relative")
+        assert acquired is True
+        try:
+            runtime = cwd / relative_home
+            records = [
+                json.loads((runtime / "gateway.pid").read_text()),
+                json.loads((runtime / "gateway_state.json").read_text()),
+                json.loads(
+                    status._get_scope_lock_path(
+                        "telegram-bot-token", "relative"
+                    ).read_text()
+                ),
+            ]
+        finally:
+            status.release_scoped_lock("telegram-bot-token", "relative")
+
+        expected_identity = str(runtime.resolve())
+        for record in records:
+            assert record["hermes_home"] == expected_identity
+            assert record["gateway_runtime_dir"] == expected_identity
+
     def test_new_pid_runtime_and_scoped_lock_records_persist_runtime_identity(
         self, tmp_path, monkeypatch
     ):
@@ -693,6 +728,26 @@ class TestTakeoverMarker:
         assert payload["target_start_time"] == 42
         assert payload["replacer_pid"] == os.getpid()
         assert "written_at" in payload
+
+    def test_relative_default_runtime_takeover_marker_round_trips(
+        self, tmp_path, monkeypatch
+    ):
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        relative_home = Path("relative-hermes-home")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("HERMES_HOME", str(relative_home))
+        monkeypatch.delenv("HERMES_GATEWAY_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 42)
+
+        marker_path = cwd / relative_home / ".gateway-takeover.json"
+        assert status.write_takeover_marker(os.getpid()) is True
+        assert marker_path.exists()
+        payload = json.loads(marker_path.read_text())
+        assert payload["target_hermes_home"] == str((cwd / relative_home).resolve())
+
+        assert status.consume_takeover_marker_for_self() is True
+        assert not marker_path.exists()
 
 
     def test_consume_returns_true_on_windows_when_start_time_unavailable(
