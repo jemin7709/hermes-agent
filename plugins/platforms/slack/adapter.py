@@ -5880,6 +5880,7 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         original_text = event.get("text", "")
+        authored_text = original_text
 
         # Slack blocks native slash commands inside threads ("/queue is not
         # supported in threads. Sorry!").  As a workaround, recognise a
@@ -6778,7 +6779,7 @@ class SlackAdapter(BasePlatformAdapter):
         _wiki_source_route = False
         if (
             str(channel_name or "").lstrip("#").casefold() == "wiki"
-            and _is_bare_stable_http_url(text)
+            and _is_bare_stable_http_url(authored_text)
         ):
             _wiki_source_route = True
             _auto_skill = [

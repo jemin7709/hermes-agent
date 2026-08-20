@@ -36,3 +36,16 @@ def test_duplicate_terminal_result_returns_its_exact_user_response(monkeypatch):
     assert _canonical_wiki_terminal_response(
         "slack", SimpleNamespace(profile="wiki"), response
     ) == "[DUPLICATE] exact"
+
+
+def test_first_terminal_tool_result_stops_the_loop(monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/wiki")
+    from agent.conversation_loop import _first_wiki_terminal_result
+
+    messages = [
+        {
+            "role": "tool",
+            "content": 'INGEST RESULT {"status":"published","user_response":"done"}',
+        },
+    ]
+    assert _first_wiki_terminal_result(messages) == "done"

@@ -25,6 +25,14 @@ class TestSlackResolveChannelSkills:
         assert _is_bare_stable_http_url("https://reliable-ai.review")
         assert not _is_bare_stable_http_url("read https://reliable-ai.review")
 
+    def test_authored_url_route_survives_unfurl_enrichment(self):
+        from plugins.platforms.slack.adapter import _is_bare_stable_http_url
+
+        authored = "https://reliable-ai.review"
+        enriched = "[Slack link unfurl]\n" + authored + "\n[image: preview]"
+        assert _is_bare_stable_http_url(authored)
+        assert not _is_bare_stable_http_url(enriched)
+
     def test_match_by_dm_channel_id(self):
         """The primary use case: binding a skill to a Slack DM channel."""
         adapter = _make_adapter({

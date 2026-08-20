@@ -235,6 +235,32 @@ class TestBotEventDiagnostics:
         ), debug_lines
 
 
+class TestWikiAuthoredUrlRouting:
+    @pytest.mark.asyncio
+    async def test_handler_uses_authored_url_after_unfurl_enrichment(self, adapter):
+        adapter.config.extra["require_mention"] = False
+        adapter._resolve_channel_name = AsyncMock(return_value="wiki")
+        adapter._resolve_user_name = AsyncMock(return_value="Test User")
+        adapter._humanize_user_mentions = AsyncMock(side_effect=lambda text, **_: text)
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "text": "https://reliable-ai.review",
+                "blocks": [{"type": "rich_text", "elements": []}],
+                "unfurls": {"https://reliable-ai.review": {"title": "Preview"}},
+                "user": "U_USER",
+                "channel": "C_WIKI",
+                "channel_type": "channel",
+                "ts": "171.000",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.metadata["wiki_source_route"] is True
+        assert event.auto_skill[0] == "jemin-personal-wiki"
+
+
 # ---------------------------------------------------------------------------
 # TestSlashCommandSessionIsolation
 # ---------------------------------------------------------------------------
@@ -3004,6 +3030,7 @@ class TestAssistantThreadLifecycle:
         runner = object.__new__(GatewayRunner)
         assert runner._thread_metadata_for_source(msg_event.source) == {
             "thread_id": "171.111",
+            "message_id": "171.111",
             "slack_team_id": "T_OTHER",
         }
 

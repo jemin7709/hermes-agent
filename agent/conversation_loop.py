@@ -1119,6 +1119,26 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 )
 
 
+def _first_wiki_terminal_result(messages: list) -> Optional[str]:
+    """Return a terminal Wiki response from the newest tool result block."""
+    for message in reversed(messages):
+        if message.get("role") != "tool":
+            break
+        for line in str(message.get("content") or "").splitlines():
+            if not line.startswith("INGEST RESULT "):
+                continue
+            try:
+                result = json.loads(line.removeprefix("INGEST RESULT "))
+            except json.JSONDecodeError:
+                continue
+            if (
+                result.get("status") in {"published", "duplicate"}
+                and isinstance(result.get("user_response"), str)
+            ):
+                return result["user_response"]
+    return None
+
+
 # Shared recovery hint appended to every content-policy refusal message. Both
 # the HTTP-200 refusal path (``finish_reason=content_filter``) and the
 # exception path (a provider moderation error classified as
@@ -7211,6 +7231,13 @@ def run_conversation(
                     final_response = ""
                     failed = True
                     break
+
+                if getattr(agent, "_wiki_terminal_guard", False):
+                    terminal_response = _first_wiki_terminal_result(messages)
+                    if terminal_response is not None:
+                        final_response = terminal_response
+                        _turn_exit_reason = "wiki_terminal_result"
+                        break
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

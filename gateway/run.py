@@ -6162,6 +6162,17 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+            _source_profile = str(getattr(ctx.source, "profile", "") or "").strip()
+            agent._wiki_terminal_guard = bool(
+                getattr(ctx.source.platform, "value", ctx.source.platform) == "slack"
+                and (
+                    _source_profile == "wiki"
+                    or (
+                        not _source_profile
+                        and Path(os.environ.get("HERMES_HOME", "")).name == "wiki"
+                    )
+                )
+            )
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
