@@ -17,6 +17,7 @@ import os
 import re
 import time
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
@@ -77,6 +78,17 @@ except Exception:
 _HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{_HERMES_VERSION}"
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+
+
+def _is_bare_stable_http_url(text: str) -> bool:
+    """Return True for one public-looking HTTP(S) URL and nothing else."""
+    value = str(text or "").strip()
+    if not value or any(char.isspace() for char in value):
+        return False
+    if not re.fullmatch(r"https?://[^<>\"']+", value, re.IGNORECASE):
+        return False
+    parsed = urllib.parse.urlsplit(value)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
 
 
 async def _read_error_text_limited(
@@ -6763,6 +6775,16 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id,
             None,
         )
+        _wiki_source_route = False
+        if (
+            str(channel_name or "").lstrip("#").casefold() == "wiki"
+            and _is_bare_stable_http_url(text)
+        ):
+            _wiki_source_route = True
+            _auto_skill = [
+                "jemin-personal-wiki",
+                *[name for name in (_auto_skill or []) if name != "jemin-personal-wiki"],
+            ]
 
         # Extract reply context if this message is a thread reply.
         # Mirrors the Telegram/Discord implementations so that gateway.run
@@ -6815,6 +6837,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "slack_team_id": team_id,
                 "slack_channel_id": channel_id,
                 "slack_thread_ts": thread_ts,
+                "wiki_source_route": _wiki_source_route,
             },
         )
 

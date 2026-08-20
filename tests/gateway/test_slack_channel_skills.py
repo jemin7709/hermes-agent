@@ -18,6 +18,13 @@ def _resolve(adapter, channel_id, parent_id=None):
 
 class TestSlackResolveChannelSkills:
 
+    def test_wiki_channel_routes_bare_github_and_root_urls(self):
+        from plugins.platforms.slack.adapter import _is_bare_stable_http_url
+
+        assert _is_bare_stable_http_url("https://github.com/jemin7709/wiki")
+        assert _is_bare_stable_http_url("https://reliable-ai.review")
+        assert not _is_bare_stable_http_url("read https://reliable-ai.review")
+
     def test_match_by_dm_channel_id(self):
         """The primary use case: binding a skill to a Slack DM channel."""
         adapter = _make_adapter({

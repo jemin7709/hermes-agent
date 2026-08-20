@@ -816,6 +816,27 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _canonical_wiki_terminal_response(platform: Any, source: Any, text: str) -> str:
+    """Collapse a terminal Wiki workflow result to its exact user response."""
+    platform_value = getattr(platform, "value", platform)
+    profile = str(getattr(source, "profile", "") or "").strip()
+    if platform_value != "slack" or (profile and profile != "wiki"):
+        return text
+    if not profile and Path(os.environ.get("HERMES_HOME", "")).name != "wiki":
+        return text
+    for line in reversed(str(text or "").splitlines()):
+        if not line.startswith("INGEST RESULT "):
+            continue
+        try:
+            result = json.loads(line.removeprefix("INGEST RESULT "))
+        except (TypeError, json.JSONDecodeError):
+            return text
+        if result.get("status") in {"published", "duplicate"} and isinstance(result.get("user_response"), str):
+            return result["user_response"]
+        return text
+    return text
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -18630,7 +18651,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Only inject on NEW sessions — ongoing conversations already have the
         # skill content in their conversation history from the first message.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
+        _wiki_source_route = bool(
+            getattr(event, "metadata", {}).get("wiki_source_route")
+        )
+        if (_is_new_session or _wiki_source_route) and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
@@ -19738,6 +19762,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             response = agent_result.get("final_response") or ""
+            response = _canonical_wiki_terminal_response(source.platform, source, response)
             # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
             # ("Codex response remained incomplete after 3 continuation
             # attempts") doubles as final_response, so it would be delivered
