@@ -103,6 +103,12 @@ _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", defaul
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
+# Exact native Slack provenance for source workflows. This stays task-local so
+# concurrent Slack turns cannot inherit another turn's source.
+_SLACK_USER_PROVENANCE_JSON: ContextVar = ContextVar(
+    "SLACK_USER_PROVENANCE_JSON", default=_UNSET
+)
+
 # Per-session cron marker. Unlike the process-global legacy env var, this is
 # scoped to one cron job / inbound session. _UNSET preserves the legacy env
 # fallback for CLI/tests; "1" marks cron; "" explicitly marks non-cron and
@@ -151,6 +157,7 @@ _VAR_MAP = {
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
+    "SLACK_USER_PROVENANCE_JSON": _SLACK_USER_PROVENANCE_JSON,
     "HERMES_CRON_SESSION": _CRON_SESSION,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -228,6 +235,7 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     profile: str = "",
+    slack_user_provenance_json: Any = _UNSET,
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
@@ -273,6 +281,7 @@ def set_session_vars(
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
+        _SLACK_USER_PROVENANCE_JSON.set(slack_user_provenance_json),
         _CRON_SESSION.set(cron_session),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
@@ -312,6 +321,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
+        _SLACK_USER_PROVENANCE_JSON,
         _CRON_SESSION,
     ):
         var.set("")
