@@ -54,6 +54,54 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+def _wiki_terminal_user_response(value: Any) -> Optional[str]:
+    """Return the exact response from one canonical terminal Wiki result."""
+    for line in str(value or "").splitlines():
+        if not line.startswith("INGEST RESULT "):
+            continue
+        try:
+            result = json.loads(line.removeprefix("INGEST RESULT "))
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if (
+            result.get("status") in {"published", "duplicate"}
+            and isinstance(result.get("user_response"), str)
+        ):
+            return result["user_response"]
+        return None
+    return None
+
+
+def _capture_wiki_terminal_response(agent: Any, value: Any) -> bool:
+    """Latch a terminal response only for the profile-scoped Wiki guard."""
+    if not getattr(agent, "_wiki_terminal_guard", False):
+        return False
+    response = _wiki_terminal_user_response(value)
+    if response is None:
+        return False
+    agent._wiki_terminal_response = response
+    return True
+
+
+def _append_skipped_wiki_followups(agent: Any, calls: list, messages: list) -> bool:
+    """Close a stopped batch without executing calls after its terminal result."""
+    for skipped_tc in calls:
+        skipped_name = skipped_tc.function.name
+        messages.append(make_tool_result_message(
+            skipped_name,
+            f"[Tool execution skipped — {skipped_name} was not started after the terminal Wiki result]",
+            skipped_tc.id,
+            effect_disposition="none",
+        ))
+        if not _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"skipped terminal Wiki follow-up {skipped_name}",
+        ):
+            return False
+    return True
+
+
 def _ensure_file_checkpoint(
     agent,
     function_name: str,
@@ -1798,6 +1846,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         ):
             return
 
+        _capture_wiki_terminal_response(agent, function_result)
+
         # Every completion surface is downstream of the canonical append. If
         # the UI bridge or process dies while projecting one of these events,
         # resume can reconstruct the tool result that was already visible.
@@ -2606,6 +2656,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         ):
             return
 
+        if _capture_wiki_terminal_response(agent, function_result):
+            _append_skipped_wiki_followups(
+                agent, assistant_message.tool_calls[i:], messages
+            )
+            return
+
         # UI completion/progress events are projections of the canonical tool
         # row, never a competing in-memory authority.
         if not _execution_blocked and agent.tool_progress_callback:
@@ -2725,8 +2781,16 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
+            return
+        if getattr(agent, "_wiki_terminal_response", None) is not None:
+            remaining = [
+                tc
+                for _, segment_calls in segments[segment_index:]
+                for tc in segment_calls
+            ]
+            _append_skipped_wiki_followups(agent, remaining, messages)
             return
         segment_message = SimpleNamespace(tool_calls=list(calls))
         if kind == "parallel":

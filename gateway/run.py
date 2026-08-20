@@ -816,27 +816,6 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _canonical_wiki_terminal_response(platform: Any, source: Any, text: str) -> str:
-    """Collapse a terminal Wiki workflow result to its exact user response."""
-    platform_value = getattr(platform, "value", platform)
-    profile = str(getattr(source, "profile", "") or "").strip()
-    if platform_value != "slack" or (profile and profile != "wiki"):
-        return text
-    if not profile and Path(os.environ.get("HERMES_HOME", "")).name != "wiki":
-        return text
-    for line in reversed(str(text or "").splitlines()):
-        if not line.startswith("INGEST RESULT "):
-            continue
-        try:
-            result = json.loads(line.removeprefix("INGEST RESULT "))
-        except (TypeError, json.JSONDecodeError):
-            return text
-        if result.get("status") in {"published", "duplicate"} and isinstance(result.get("user_response"), str):
-            return result["user_response"]
-        return text
-    return text
-
-
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -6162,6 +6141,19 @@ class TurnRunner:
                 _conversation_kwargs["moa_config"] = ctx.moa_config
             if _persist_user_timestamp_override is not None:
                 _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+            source_platform = getattr(ctx.source.platform, "value", ctx.source.platform)
+            source_profile = str(getattr(ctx.source, "profile", "") or "").strip()
+            agent._wiki_terminal_guard = bool(
+                source_platform == "slack"
+                and (
+                    source_profile == "wiki"
+                    or (
+                        not source_profile
+                        and Path(os.environ.get("HERMES_HOME", "")).name == "wiki"
+                    )
+                )
+            )
+            agent._wiki_terminal_response = None
             result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
@@ -19762,7 +19754,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             response = agent_result.get("final_response") or ""
-            response = _canonical_wiki_terminal_response(source.platform, source, response)
             # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
             # ("Codex response remained incomplete after 3 continuation
             # attempts") doubles as final_response, so it would be delivered

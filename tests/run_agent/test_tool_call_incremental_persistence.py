@@ -381,6 +381,46 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+def test_guarded_terminal_result_stops_real_admission_and_conversation_loop():
+    agent = _make_agent()
+    agent._wiki_terminal_guard = True
+    first = _mock_tool_call(arguments='{"query":"source"}', call_id="publish")
+    second = _mock_tool_call(arguments='{"query":"later"}', call_id="followup")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[first, second],
+    )
+    dispatched: list[str] = []
+
+    def _dispatch(function_name, function_args, effective_task_id, **kwargs):
+        dispatched.append(kwargs["tool_call_id"])
+        return 'INGEST RESULT {"status":"published","user_response":"exact reply"}'
+
+    with (
+        patch("run_agent.handle_function_call", side_effect=_dispatch),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        result = agent.run_conversation("publish this source")
+
+    assert dispatched == ["publish"]
+    assert result["final_response"] == "exact reply"
+    assert result["turn_exit_reason"] == "wiki_terminal_result"
+    assert [m.get("tool_call_id") for m in result["messages"] if m.get("role") == "tool"] == [
+        "publish",
+        "followup",
+    ]
+    skipped = [m for m in result["messages"] if m.get("tool_call_id") == "followup"]
+    assert len(skipped) == 1
+    assert "not started after the terminal Wiki result" in skipped[0]["content"]
+
+
 def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 

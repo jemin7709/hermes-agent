@@ -235,6 +235,73 @@ class TestBotEventDiagnostics:
         ), debug_lines
 
 
+class TestWikiAuthoredUrlRouting:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        ["https://github.com/jemin7709/hermes-agent", "https://example.test"],
+    )
+    async def test_bare_authored_url_routes_before_unfurl_enrichment(self, adapter, url):
+        adapter.config.extra["require_mention"] = False
+        adapter._resolve_channel_name = AsyncMock(return_value="wiki")
+        adapter._resolve_user_name = AsyncMock(return_value="Test User")
+        adapter._humanize_user_mentions = AsyncMock(side_effect=lambda text, **_: text)
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "text": url,
+                "attachments": [{"title": "Preview", "title_link": url}],
+                "user": "U_USER",
+                "channel": "C_WIKI",
+                "channel_type": "channel",
+                "ts": "171.000",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.metadata["wiki_source_route"] is True
+        assert event.auto_skill[0] == "jemin-personal-wiki"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url, authored_text",
+        [
+            (
+                "https://github.com/jemin7709/hermes-agent",
+                "<https://github.com/jemin7709/hermes-agent>",
+            ),
+            (
+                "https://example.test",
+                "<https://example.test|https://example.test>",
+            ),
+        ],
+    )
+    async def test_slack_mrkdwn_authored_url_routes_before_unfurl_enrichment(
+        self, adapter, url, authored_text
+    ):
+        adapter.config.extra["require_mention"] = False
+        adapter._resolve_channel_name = AsyncMock(return_value="wiki")
+        adapter._resolve_user_name = AsyncMock(return_value="Test User")
+        adapter._humanize_user_mentions = AsyncMock(side_effect=lambda text, **_: text)
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "text": authored_text,
+                "attachments": [{"title": "Preview", "title_link": url}],
+                "user": "U_USER",
+                "channel": "C_WIKI",
+                "channel_type": "channel",
+                "ts": f"172.{len(authored_text)}",
+            }
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.metadata["wiki_source_route"] is True
+        assert event.auto_skill[0] == "jemin-personal-wiki"
+
+
 # ---------------------------------------------------------------------------
 # TestSlashCommandSessionIsolation
 # ---------------------------------------------------------------------------
@@ -3004,6 +3071,7 @@ class TestAssistantThreadLifecycle:
         runner = object.__new__(GatewayRunner)
         assert runner._thread_metadata_for_source(msg_event.source) == {
             "thread_id": "171.111",
+            "message_id": "171.111",
             "slack_team_id": "T_OTHER",
         }
 

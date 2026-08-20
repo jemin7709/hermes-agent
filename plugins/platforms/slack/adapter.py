@@ -91,6 +91,20 @@ def _is_bare_stable_http_url(text: str) -> bool:
     return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
 
 
+def _normalize_single_slack_http_link(text: str) -> str:
+    """Unwrap only one Slack mrkdwn HTTP(S) link with no changed label."""
+    value = str(text or "").strip()
+    if not (value.startswith("<") and value.endswith(">")):
+        return value
+    inner = value[1:-1]
+    parts = inner.split("|")
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2 and parts[0] == parts[1]:
+        return parts[0]
+    return value
+
+
 async def _read_error_text_limited(
     response: Any,
     *,
@@ -5891,6 +5905,7 @@ class SlackAdapter(BasePlatformAdapter):
         command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
         if command_probe_text != original_text.lstrip():
             original_text = command_probe_text
+        authored_text = original_text
 
         is_command_text = command_probe_text.startswith("/")
         text = original_text
@@ -6778,7 +6793,9 @@ class SlackAdapter(BasePlatformAdapter):
         _wiki_source_route = False
         if (
             str(channel_name or "").lstrip("#").casefold() == "wiki"
-            and _is_bare_stable_http_url(text)
+            and _is_bare_stable_http_url(
+                _normalize_single_slack_http_link(authored_text)
+            )
         ):
             _wiki_source_route = True
             _auto_skill = [

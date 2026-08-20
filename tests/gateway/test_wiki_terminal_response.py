@@ -1,38 +1,41 @@
 from types import SimpleNamespace
 
 
-def test_wiki_terminal_result_returns_exact_user_response(monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/wiki")
-    from gateway.run import _canonical_wiki_terminal_response
+def test_terminal_tool_result_keeps_exact_response_and_ignores_failed():
+    from agent.tool_executor import _capture_wiki_terminal_response
 
-    response = (
-        "internal verification\n"
-        'INGEST RESULT {"status":"published","user_response":"[PUBLISHED] <https://example.test|open>"}\n'
-        "prepare again"
+    agent = SimpleNamespace(_wiki_terminal_guard=True)
+    assert _capture_wiki_terminal_response(
+        agent,
+        'INGEST RESULT {"status":"published","user_response":"done"}',
     )
-    assert _canonical_wiki_terminal_response(
-        "slack", SimpleNamespace(profile="wiki"), response
-    ) == "[PUBLISHED] <https://example.test|open>"
+    assert agent._wiki_terminal_response == "done"
+    assert not _capture_wiki_terminal_response(
+        agent,
+        'INGEST RESULT {"status":"failed","user_response":"nope"}',
+    )
+    assert agent._wiki_terminal_response == "done"
 
 
-def test_nonterminal_or_nonwiki_response_is_unchanged(monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/wiki")
-    from gateway.run import _canonical_wiki_terminal_response
+def test_non_wiki_result_is_unchanged():
+    from agent.tool_executor import _capture_wiki_terminal_response
 
-    response = 'INGEST RESULT {"status":"failed","user_response":"nope"}'
-    assert _canonical_wiki_terminal_response(
-        "slack", SimpleNamespace(profile="wiki"), response
-    ) == response
-    assert _canonical_wiki_terminal_response(
-        "telegram", SimpleNamespace(profile="wiki"), response
-    ) == response
+    agent = SimpleNamespace(_wiki_terminal_guard=False)
+    assert not _capture_wiki_terminal_response(
+        agent,
+        'INGEST RESULT {"status":"duplicate","user_response":"already"}',
+    )
+    assert not hasattr(agent, "_wiki_terminal_response")
 
 
-def test_duplicate_terminal_result_returns_its_exact_user_response(monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/wiki")
-    from gateway.run import _canonical_wiki_terminal_response
+def test_wiki_terminal_seam_stops_before_a_second_tool():
+    from agent.tool_executor import _capture_wiki_terminal_response
 
-    response = 'INGEST RESULT {"status":"duplicate","user_response":"[DUPLICATE] exact"}'
-    assert _canonical_wiki_terminal_response(
-        "slack", SimpleNamespace(profile="wiki"), response
-    ) == "[DUPLICATE] exact"
+    agent = SimpleNamespace(_wiki_terminal_guard=True)
+    calls = []
+    first = 'INGEST RESULT {"status":"published","user_response":"done"}'
+    calls.append("prepare")
+    if not _capture_wiki_terminal_response(agent, first):
+        calls.append("second_prepare")
+    assert agent._wiki_terminal_response == "done"
+    assert calls == ["prepare"]
