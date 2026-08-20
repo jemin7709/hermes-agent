@@ -25,6 +25,33 @@ class TestSlackResolveChannelSkills:
         assert _is_bare_stable_http_url("https://reliable-ai.review")
         assert not _is_bare_stable_http_url("read https://reliable-ai.review")
 
+    def test_slack_link_normalization_accepts_only_same_url_labels(self):
+        from plugins.platforms.slack.adapter import (
+            _is_bare_stable_http_url,
+            _normalize_single_slack_http_link,
+        )
+
+        accepted = [
+            "<https://example.test>",
+            "<https://example.test|https://example.test>",
+        ]
+        rejected = [
+            "<https://example.test|Example>",
+            "<https://example.test> extra",
+            "<https://example.test> <https://other.test>",
+            "<ftp://example.test>",
+            "<https://example.test|https://example.test|extra>",
+        ]
+
+        assert all(
+            _is_bare_stable_http_url(_normalize_single_slack_http_link(value))
+            for value in accepted
+        )
+        assert all(
+            not _is_bare_stable_http_url(_normalize_single_slack_http_link(value))
+            for value in rejected
+        )
+
     def test_match_by_dm_channel_id(self):
         """The primary use case: binding a skill to a Slack DM channel."""
         adapter = _make_adapter({

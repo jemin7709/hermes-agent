@@ -7203,6 +7203,12 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                terminal_response = getattr(agent, "_wiki_terminal_response", None)
+                if terminal_response is not None:
+                    final_response = terminal_response
+                    _turn_exit_reason = "wiki_terminal_result"
+                    break
+
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
                     # the in-memory result back to the model or project any

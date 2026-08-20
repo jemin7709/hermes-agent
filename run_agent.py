@@ -8177,6 +8177,10 @@ class AIAgent:
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
+            if getattr(self, "_wiki_terminal_guard", False):
+                return self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
             if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(
                     assistant_message, messages, effective_task_id, api_call_count
