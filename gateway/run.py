@@ -23861,6 +23861,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            slack_user_provenance_json=(
+                json.dumps(
+                    {
+                        "origin": "slack",
+                        "channel_id": str(context.source.chat_id),
+                        "message_ts": str(context.source.message_id or ""),
+                        "user_id": str(context.source.user_id or ""),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if context.source.platform == Platform.SLACK
+                else ""
+            ),
             async_delivery=_async_delivery,
             cron_session="",
         )

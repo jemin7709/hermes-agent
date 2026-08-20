@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 import pytest
@@ -74,6 +75,52 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+
+
+def test_wiki_slack_provenance_is_native_and_task_local():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="group",
+        user_id="U123",
+        thread_id="171.000",
+        message_id="171.123456",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    tokens = runner._set_session_env(context)
+    try:
+        assert json.loads(get_session_env("SLACK_USER_PROVENANCE_JSON")) == {
+            "origin": "slack",
+            "channel_id": "C123",
+            "message_ts": "171.123456",
+            "user_id": "U123",
+        }
+    finally:
+        runner._clear_session_env(tokens)
+    assert get_session_env("SLACK_USER_PROVENANCE_JSON") == ""
+
+
+def test_wiki_slack_provenance_reaches_child_env_without_non_slack_fallback(monkeypatch):
+    from tools.environments.local import build_subprocess_env
+
+    monkeypatch.setenv("SLACK_USER_PROVENANCE_JSON", "foreign")
+    tokens = set_session_vars(
+        platform="slack",
+        slack_user_provenance_json='{"origin":"slack","channel_id":"C1","message_ts":"1.2","user_id":"U1"}',
+    )
+    try:
+        assert build_subprocess_env().get("SLACK_USER_PROVENANCE_JSON") == (
+            '{"origin":"slack","channel_id":"C1","message_ts":"1.2","user_id":"U1"}'
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    tokens = set_session_vars(platform="telegram", slack_user_provenance_json="")
+    try:
+        assert build_subprocess_env().get("SLACK_USER_PROVENANCE_JSON") == ""
+    finally:
+        clear_session_vars(tokens)
 
 
 def test_clear_session_env_restores_previous_state(monkeypatch):

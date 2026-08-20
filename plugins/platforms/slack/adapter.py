@@ -6727,6 +6727,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            message_id=ts,
             scope_id=str(team_id) if team_id else None,
             # Slack Workflow Builder / app posts arrive as
             # subtype=bot_message with user=None; flag them so the
